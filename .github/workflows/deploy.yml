@@ -53,16 +53,16 @@ jobs:
     - name: Setup Node.js
       uses: actions/setup-node@v4
       with:
-        node-version: '18'
+        node-version: '20'
         cache: 'npm'
         cache-dependency-path: 'frontend/package-lock.json'
     
     - name: Install AWS CLI and jq
       run: |
         sudo apt-get update
-        sudo apt-get install -y jq unzip
+        sudo apt-get install -q --no-install-recommends -y jq unzip
         curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
-        unzip awscliv2.zip
+        unzip -q awscliv2.zip
         sudo ./aws/install --update
     
     - name: Configure AWS Credentials
@@ -71,15 +71,6 @@ jobs:
         role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
         aws-region: ${{ env.AWS_REGION }}
         role-session-name: GitHubActionsAlex
-    
-    # ========== GUIDE 1: State Bucket ==========
-    # - name: Initialize State Bucket
-    #   run: |
-    #     cd terraform/1_state
-    #     terraform init
-    #     terraform apply -auto-approve \
-    #       -var="environment=${{ env.ENVIRONMENT }}" \
-    #       -var="aws_region=${{ env.AWS_REGION }}"
     
     # ========== GUIDE 2: SageMaker ==========
     - name: Deploy SageMaker Endpoint
@@ -120,27 +111,17 @@ jobs:
           -var="sagemaker_endpoint_name=$SAGEMAKER_ENDPOINT"
     
     # ========== GUIDE 4: Researcher Agent ==========
-    - name: Build and Push Researcher Docker Image
-      run: |
-        cd backend/researcher
-        
-        # Login to ECR
-        aws ecr get-login-password --region ${{ env.AWS_REGION }} | \
-          docker login --username AWS --password-stdin \
-          ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
-        
-        # Build and push
-        docker build -t alex-researcher:${{ github.sha }} .
-        docker tag alex-researcher:${{ github.sha }} \
-          ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/alex-researcher:${{ github.sha }}
-        docker push \
-          ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/alex-researcher:${{ github.sha }}
-    
-    - name: Deploy Researcher Agent
+    - name: Deploy Researcher Agent Infrastructure
       run: |
         # Get vector bucket
         cd terraform/3_ingestion
-        VECTOR_BUCKET=$(terraform output -raw vector_bucket)
+        VECTOR_BUCKET=$(terraform output -raw vector_bucket_name)
+
+        ALEX_API_ENDPOINT=$(terraform output -raw api_endpoint)
+
+        ALEX_API_KEY_ID=$(terraform output -raw api_key_id)
+        ALEX_API_KEY=$(aws apigateway get-api-key --api-key $ALEX_API_KEY_ID --include-value --query 'value' --output text)
+
         cd ../..
         
         cd terraform/4_researcher
@@ -149,12 +130,84 @@ jobs:
           -backend-config="key=4_researcher/terraform.tfstate" \
           -backend-config="region=${{ env.AWS_REGION }}"
         
-        terraform apply -auto-approve \
+        # -var="docker_image_tag=${{ github.sha }}" 
+        # -var="vector_bucket=$VECTOR_BUCKET" 
+       
+        # Deploy only the ECR repository and IAM roles (Not App Runner yet)
+        terraform apply -lock=false -auto-approve \
+          -target=aws_ecr_repository.researcher \
+          -target=aws_iam_role.app_runner_role \
+          -auto-approve \
           -var="environment=${{ env.ENVIRONMENT }}" \
           -var="aws_region=${{ env.AWS_REGION }}" \
-          -var="vector_bucket=$VECTOR_BUCKET" \
-          -var="docker_image_tag=${{ github.sha }}"
+          -var="alex_api_endpoint=$ALEX_API_ENDPOINT" \
+          -var="alex_api_key=$ALEX_API_KEY_ID" \
+          -var="openai_api_key=${{ secrets.OPENAI_API_KEY }}"
+
+        
+    - name: Build and Push Researcher Docker Image
+      env:
+        DEFAULT_AWS_REGION: ${{ vars.AWS_REGION }}
+        AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+
+      run: |
+        cd terraform/3_ingestion
+        VECTOR_BUCKET=$(terraform output -raw vector_bucket_name)
+
+        ALEX_API_ENDPOINT=$(terraform output -raw api_endpoint)
+
+        ALEX_API_KEY_ID=$(terraform output -raw api_key_id)
+        ALEX_API_KEY=$(aws apigateway get-api-key --api-key $ALEX_API_KEY_ID --include-value --query 'value' --output text)
+
+        cd ../..
+        
+        cd backend/researcher
+
+        # run build script to create Dockerfile and build context
+        uv run deploy.py
+
+        cd ../..
+        
+        # Login to ECR
+        # aws ecr get-login-password --region ${{ env.AWS_REGION }} | \
+        #   docker login --username AWS --password-stdin \
+        #   ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
+        # 
+        # # Build and push
+        # docker build -t alex-researcher:${{ github.sha }} .
+        # docker tag alex-researcher:${{ github.sha }} \
+        #   ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/alex-researcher:${{ github.sha }}
+        # docker push \
+        #   ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/alex-researcher:${{ github.sha }}
+
+    - name: Create the App Runner Service for Researcher Agent
+      run: |
+        # Get vector bucket
+
+        cd terraform/3_ingestion
+
+        VECTOR_BUCKET=$(terraform output -raw vector_bucket_name)
+
+        ALEX_API_ENDPOINT=$(terraform output -raw api_endpoint)
+
+        ALEX_API_KEY_ID=$(terraform output -raw api_key_id)
+        ALEX_API_KEY=$(aws apigateway get-api-key --api-key $ALEX_API_KEY_ID --include-value --query 'value' --output text)
+
+        cd ../..
+
+        cd terraform/4_researcher
+        # Get the ECR image URL
+        IMAGE_URL="${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/alex-researcher:${{ github.sha }}"
+        
+        terraform apply -lock=false -auto-approve \
+          -var="environment=${{ env.ENVIRONMENT }}" \
+          -var="aws_region=${{ env.AWS_REGION }}" \
+          -var="alex_api_endpoint=$ALEX_API_ENDPOINT" \
+          -var="alex_api_key=$ALEX_API_KEY_ID" \
+          -var="openai_api_key=${{ secrets.OPENAI_API_KEY }}" 
     
+          
     # ========== GUIDE 5: Database ==========
     - name: Deploy Aurora Database
       run: |

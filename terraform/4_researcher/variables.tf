@@ -29,6 +29,7 @@ variable "scheduler_enabled" {
 variable "tfstate_bucket" {
   description = "S3 bucket for Terraform state"
   type        = string
+  default     = "alex-terraform-state-820374639726"
 }
 
 variable "environment" {

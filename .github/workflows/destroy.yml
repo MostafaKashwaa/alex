@@ -1,0 +1,317 @@
+name: Destroy Alex Platform
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to destroy'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+        - staging
+        - production
+      confirm_destroy:
+        description: 'Type "DESTROY" to confirm destruction (this will delete all resources)'
+        required: true
+        type: string
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION || 'eu-central-1' }}
+  ENVIRONMENT: ${{ github.event.inputs.environment }}
+  AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+  STATE_BUCKET: alex-terraform-state-${{ secrets.AWS_ACCOUNT_ID }}
+
+jobs:
+  destroy:
+    name: Destroy Alex Platform
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    
+    steps:
+    - name: Check confirmation
+      if: github.event.inputs.confirm_destroy != 'DESTROY'
+      run: |
+        echo "❌ Destruction not confirmed. Please type 'DESTROY' to proceed."
+        exit 1
+    
+    - name: Checkout
+      uses: actions/checkout@v4
+    
+    - name: Setup Python with uv
+      uses: astral-sh/setup-uv@v3
+      with:
+        enable-cache: true
+        cache-dependency-glob: '**/uv.lock'
+    
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: 1.14.8
+    
+    - name: Setup Docker
+      uses: docker/setup-buildx-action@v3
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+        cache: 'npm'
+        cache-dependency-path: 'frontend/package-lock.json'
+    
+    - name: Install AWS CLI and jq
+      run: |
+        sudo apt-get update
+        sudo apt-get install -q --no-install-recommends -y jq unzip
+        curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+        unzip -q awscliv2.zip
+        sudo ./aws/install --update
+    
+    - name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+        aws-region: ${{ env.AWS_REGION }}
+        role-session-name: GitHubActionsAlexDestroy
+    
+    - name: Show Destruction Warning
+      run: |
+        echo "⚠️  WARNING: This will DESTROY all Alex Platform resources in ${{ env.ENVIRONMENT }} environment!"
+        echo "⚠️  This action cannot be undone!"
+        echo "⚠️  Resources to be destroyed:"
+        echo "   - Frontend (CloudFront, S3)"
+        echo "   - Enterprise Features (Langfuse, monitoring)"
+        echo "   - Agent Orchestra (Lambdas, EventBridge)"
+        echo "   - Database (Aurora PostgreSQL)"
+        echo "   - Researcher Agent (ECS, ECR)"
+        echo "   - Ingestion Pipeline (Lambda, API Gateway, S3)"
+        echo "   - SageMaker Endpoint"
+        echo ""
+        echo "Proceeding with destruction in 10 seconds..."
+        sleep 10
+    
+        # # ========== GUIDE 8: Enterprise Features ==========
+        # - name: Destroy Enterprise Features
+        #   run: |
+        #     echo "🗑️  Destroying Enterprise Features..."
+        #     cd terraform/8_enterprise
+        #     terraform init \
+        #       -backend-config="bucket=${{ env.STATE_BUCKET }}" \
+        #       -backend-config="key=8_enterprise/terraform.tfstate" \
+        #       -backend-config="region=${{ env.AWS_REGION }}"
+        #     
+        #     terraform destroy -auto-approve \
+        #       -var="environment=${{ env.ENVIRONMENT }}" \
+        #       -var="aws_region=${{ env.AWS_REGION }}" \
+        #       -var="langfuse_public_key=${{ secrets.LANGFUSE_PUBLIC_KEY }}" \
+        #       -var="langfuse_secret_key=${{ secrets.LANGFUSE_SECRET_KEY }}" \
+        #       -var="langfuse_host=${{ vars.LANGFUSE_HOST || 'https://us.cloud.langfuse.com' }}"
+        # 
+        # # ========== GUIDE 7: Frontend ==========
+        # - name: Destroy Frontend
+        #   run: |
+        #     echo "🗑️  Destroying Frontend..."
+        #     cd terraform/7_frontend
+        #     terraform init \
+        #       -backend-config="bucket=${{ env.STATE_BUCKET }}" \
+        #       -backend-config="key=7_frontend/terraform.tfstate" \
+        #       -backend-config="region=${{ env.AWS_REGION }}"
+        #     
+        #     terraform destroy -auto-approve \
+        #       -var="environment=${{ env.ENVIRONMENT }}" \
+        #       -var="aws_region=${{ env.AWS_REGION }}" \
+        #       -var="clerk_publishable_key=${{ secrets.CLERK_PUBLISHABLE_KEY }}" \
+        #       -var="clerk_secret_key=${{ secrets.CLERK_SECRET_KEY }}"
+        # 
+        # # ========== GUIDE 6: Agent Orchestra ==========
+        # - name: Destroy Agent Orchestra
+        #   run: |
+        #     echo "🗑️  Destroying Agent Orchestra..."
+        #     
+        #     # Get outputs from previous modules
+        #     cd terraform/2_sagemaker
+        #     SAGEMAKER_ENDPOINT=$(terraform output -raw sagemaker_endpoint_name 2>/dev/null || echo "")
+        #     cd ../..
+        #     
+        #     cd terraform/3_ingestion
+        #     VECTOR_BUCKET=$(terraform output -raw vector_bucket 2>/dev/null || echo "")
+        #     cd ../..
+        #     
+        #     cd terraform/5_database
+        #     AURORA_CLUSTER_ARN=$(terraform output -raw aurora_cluster_arn 2>/dev/null || echo "")
+        #     AURORA_SECRET_ARN=$(terraform output -raw aurora_secret_arn 2>/dev/null || echo "")
+        #     cd ../..
+        #     
+        #     cd terraform/6_agents
+        #     terraform init \
+        #       -backend-config="bucket=${{ env.STATE_BUCKET }}" \
+        #       -backend-config="key=6_agents/terraform.tfstate" \
+        #       -backend-config="region=${{ env.AWS_REGION }}"
+        #     
+        #     terraform destroy -auto-approve \
+        #       -var="environment=${{ env.ENVIRONMENT }}" \
+        #       -var="aws_region=${{ env.AWS_REGION }}" \
+        #       -var="aurora_cluster_arn=$AURORA_CLUSTER_ARN" \
+        #       -var="aurora_secret_arn=$AURORA_SECRET_ARN" \
+        #       -var="vector_bucket=$VECTOR_BUCKET" \
+        #       -var="sagemaker_endpoint=$SAGEMAKER_ENDPOINT" \
+        #       -var="bedrock_model_id=${{ vars.BEDROCK_MODEL_ID || 'us.amazon.nova-pro-v1:0' }}" \
+        #       -var="bedrock_region=${{ vars.BEDROCK_REGION || 'us-west-2' }}" \
+        #       -var="polygon_api_key=${{ secrets.POLYGON_API_KEY }}" \
+        #       -var="polygon_plan=${{ vars.POLYGON_PLAN || 'free' }}" \
+        #       -var="openai_api_key=${{ secrets.OPENAI_API_KEY }}"
+        # 
+    # ========== GUIDE 5: Database ==========
+    - name: Destroy Aurora Database
+      run: |
+        echo "🗑️  Destroying Aurora Database..."
+        cd terraform/5_database
+        terraform init \
+          -backend-config="bucket=${{ env.STATE_BUCKET }}" \
+          -backend-config="key=5_database/terraform.tfstate" \
+          -backend-config="region=${{ env.AWS_REGION }}"
+        
+        terraform destroy -auto-approve \
+          -var="environment=${{ env.ENVIRONMENT }}" \
+          -var="aws_region=${{ env.AWS_REGION }}"
+    
+    # ========== GUIDE 4: Researcher Agent ==========
+    # - name: Destroy Researcher Agent
+    #   run: |
+    #     echo "🗑️  Destroying Researcher Agent..."
+    #     
+    #     # Get vector bucket
+    #     # -var="vector_bucket=$VECTOR_BUCKET" \
+    #     # -var="docker_image_tag=${{ github.sha }}"
+    #     cd terraform/3_ingestion
+    #     VECTOR_BUCKET=$(terraform output -raw vector_bucket 2>/dev/null || echo "")
+    #     ALEX_API_KEY_ID=$(terraform output -raw api_key_id)
+
+    #     ALEX_API_ENDPOINT=$(terraform output -raw api_endpoint)
+
+    #     ALEX_API_KEY=$(aws apigateway get-api-key --api-key $ALEX_API_KEY_ID --include-value --query 'value' --output text)
+
+
+    #     cd ../..
+    #     
+    #     cd terraform/4_researcher
+    #     terraform init \
+    #       -backend-config="bucket=${{ env.STATE_BUCKET }}" \
+    #       -backend-config="key=4_researcher/terraform.tfstate" \
+    #       -backend-config="region=${{ env.AWS_REGION }}"
+    #     
+    #     terraform destroy -auto-approve \
+    #       -var="environment=${{ env.ENVIRONMENT }}" \
+    #       -var="aws_region=${{ env.AWS_REGION }}" \
+    #       -var="alex_api_endpoint=$ALEX_API_ENDPOINT" \
+    #       -var="alex_api_key=$ALEX_API_KEY_ID" \
+    #       -var="openai_api_key=${{ secrets.OPENAI_API_KEY }}" 
+
+    
+    # ========== GUIDE 3: Ingestion Pipeline ==========
+    - name: Destroy Ingestion Pipeline
+      run: |
+        echo "🗑️  Destroying Ingestion Pipeline..."
+        
+        # Get SageMaker endpoint
+        cd terraform/2_sagemaker
+        SAGEMAKER_ENDPOINT=$(terraform output -raw sagemaker_endpoint_name 2>/dev/null || echo "")
+        cd ../..
+        
+        cd terraform/3_ingestion
+        terraform init \
+          -backend-config="bucket=${{ env.STATE_BUCKET }}" \
+          -backend-config="key=3_ingestion/terraform.tfstate" \
+          -backend-config="region=${{ env.AWS_REGION }}"
+        
+        terraform destroy -auto-approve \
+          -var="environment=${{ env.ENVIRONMENT }}" \
+          -var="aws_region=${{ env.AWS_REGION }}" \
+          -var="sagemaker_endpoint_name=$SAGEMAKER_ENDPOINT"
+    
+    # ========== GUIDE 2: SageMaker ==========
+    - name: Destroy SageMaker Endpoint
+      run: |
+        echo "🗑️  Destroying SageMaker Endpoint..."
+        cd terraform/2_sagemaker
+        terraform init \
+          -backend-config="bucket=${{ env.STATE_BUCKET }}" \
+          -backend-config="key=2_sagemaker/terraform.tfstate" \
+          -backend-config="region=${{ env.AWS_REGION }}"
+        
+        terraform destroy -auto-approve \
+          -var="environment=${{ env.ENVIRONMENT }}" \
+          -var="aws_region=${{ env.AWS_REGION }}"
+    
+    # ========== GUIDE 1: State Bucket ==========
+    # Note: State bucket destruction is commented out by default
+    # as it contains Terraform state files. Uncomment only if you want
+    # to completely remove everything including state.
+    # - name: Destroy State Bucket
+    #   run: |
+    #     echo "🗑️  Destroying State Bucket..."
+    #     cd terraform/1_state
+    #     terraform init
+    #     terraform destroy -auto-approve \
+    #       -var="environment=${{ env.ENVIRONMENT }}" \
+    #       -var="aws_region=${{ env.AWS_REGION }}"
+    
+    - name: Clean up ECR Images
+      run: |
+        echo "🗑️  Cleaning up ECR images..."
+        
+        # Delete researcher image
+        aws ecr batch-delete-image \
+          --repository-name alex-researcher \
+          --image-ids imageTag=${{ github.sha }} \
+          --region ${{ env.AWS_REGION }} || true
+        
+        # Delete agent images
+        for agent in planner tagger reporter charter retirement; do
+          aws ecr batch-delete-image \
+            --repository-name alex-$agent \
+            --image-ids imageTag=${{ github.sha }} \
+            --region ${{ env.AWS_REGION }} || true
+        done
+        
+        echo "✅ ECR images cleaned up"
+    
+    - name: Generate Destruction Summary
+      if: always()
+      run: |
+        echo "## 🗑️ Alex Platform Destruction Complete" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Environment:** ${{ env.ENVIRONMENT }}" >> $GITHUB_STEP_SUMMARY
+        echo "**Region:** ${{ env.AWS_REGION }}" >> $GITHUB_STEP_SUMMARY
+        echo "**Destroyed at:** $(date -u)" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        echo "### 📋 Destroyed Resources" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "✅ **Frontend:** CloudFront, S3 bucket" >> $GITHUB_STEP_SUMMARY
+        echo "✅ **Enterprise Features:** Langfuse integration, monitoring" >> $GITHUB_STEP_SUMMARY
+        echo "✅ **Agent Orchestra:** Lambda functions, EventBridge rules, IAM roles" >> $GITHUB_STEP_SUMMARY
+        echo "✅ **Database:** Aurora PostgreSQL cluster, secrets, security groups" >> $GITHUB_STEP_SUMMARY
+        echo "✅ **Researcher Agent:** ECS cluster, ECR repository, load balancer" >> $GITHUB_STEP_SUMMARY
+        echo "✅ **Ingestion Pipeline:** Lambda functions, API Gateway, S3 buckets" >> $GITHUB_STEP_SUMMARY
+        echo "✅ **SageMaker:** Endpoint, model, endpoint configuration" >> $GITHUB_STEP_SUMMARY
+        echo "✅ **ECR Images:** Docker images cleaned up" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        echo "### ⚠️ Important Notes" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "1. **State bucket was NOT destroyed** (contains Terraform state)" >> $GITHUB_STEP_SUMMARY
+        echo "2. Manual cleanup may be needed for:" >> $GITHUB_STEP_SUMMARY
+        echo "   - CloudWatch log groups" >> $GITHUB_STEP_SUMMARY
+        echo "   - S3 buckets with versioning enabled" >> $GITHUB_STEP_SUMMARY
+        echo "   - IAM roles/policies created outside Terraform" >> $GITHUB_STEP_SUMMARY
+        echo "3. To completely remove everything, manually delete the state bucket:" >> $GITHUB_STEP_SUMMARY
+        echo "   \`alex-terraform-state-${{ secrets.AWS_ACCOUNT_ID }}\`" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        echo "### 🔧 Next Steps" >> $GITHUB_STEP_SUMMARY
+        echo "1. Verify all resources are deleted in AWS Console" >> $GITHUB_STEP_SUMMARY
+        echo "2. Check for any residual costs in AWS Cost Explorer" >> $GITHUB_STEP_SUMMARY
+        echo "3. If redeploying, run the deploy workflow again" >> $GITHUB_STEP_SUMMARY
