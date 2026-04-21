@@ -14,3 +14,10 @@ variable "embedding_model_name" {
   type        = string
   default     = "sentence-transformers/all-MiniLM-L6-v2"
 }
+
+variable "environment" {
+  description = "Deployment environment (e.g., production, staging)" 
+  type        = string 
+  default     = "production"
+  
+}

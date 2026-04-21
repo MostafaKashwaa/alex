@@ -30,3 +30,10 @@ variable "tfstate_bucket" {
   description = "S3 bucket for Terraform state"
   type        = string
 }
+
+variable "environment" {
+  description = "Deployment environment (e.g., production, staging)" 
+  type        = string 
+  default     = "production"
+  
+}

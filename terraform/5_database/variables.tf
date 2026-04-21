@@ -14,3 +14,10 @@ variable "max_capacity" {
   type        = number
   default     = 1
 }
+
+variable "environment" {
+  description = "Deployment environment (e.g., production, staging)" 
+  type        = string 
+  default     = "production"
+  
+}

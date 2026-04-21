@@ -15,3 +15,10 @@ variable "clerk_issuer" {
   type        = string
   default     = ""  # Not actually used but kept for backwards compatibility
 }
+
+variable "environment" {
+  description = "Deployment environment (e.g., production, staging)" 
+  type        = string 
+  default     = "production"
+  
+}

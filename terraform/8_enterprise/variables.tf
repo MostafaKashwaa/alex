@@ -15,3 +15,10 @@ variable "bedrock_model_id" {
   type        = string
   default     = "amazon.nova-pro-v1:0"
 }
+
+variable "environment" {
+  description = "Deployment environment (e.g., production, staging)" 
+  type        = string 
+  default     = "production"
+  
+}

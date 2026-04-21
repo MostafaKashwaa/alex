@@ -73,3 +73,10 @@ variable "openai_api_key" {
   default     = ""
   sensitive   = true
 }
+
+variable "environment" {
+  description = "Deployment environment (e.g., production, staging)" 
+  type        = string 
+  default     = "production"
+  
+}
