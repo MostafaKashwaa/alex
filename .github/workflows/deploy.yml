@@ -73,13 +73,13 @@ jobs:
         role-session-name: GitHubActionsAlex
     
     # ========== GUIDE 1: State Bucket ==========
-    - name: Initialize State Bucket
-      run: |
-        cd terraform/1_state
-        terraform init
-        terraform apply -auto-approve \
-          -var="environment=${{ env.ENVIRONMENT }}" \
-          -var="aws_region=${{ env.AWS_REGION }}"
+    # - name: Initialize State Bucket
+    #   run: |
+    #     cd terraform/1_state
+    #     terraform init
+    #     terraform apply -auto-approve \
+    #       -var="environment=${{ env.ENVIRONMENT }}" \
+    #       -var="aws_region=${{ env.AWS_REGION }}"
     
     # ========== GUIDE 2: SageMaker ==========
     - name: Deploy SageMaker Endpoint
