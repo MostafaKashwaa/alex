@@ -2,11 +2,21 @@
 
 terraform {
   required_version = ">= 1.0"
+
   required_providers {
     aws = {
       source  = "hashicorp/aws"
       version = "~> 5.0"
     }
+  }
+
+  backend "s3" {
+    bucket       = "alex-terraform-state-820374639726"
+    key          = "frontend/terraform.tfstate"
+    region       = "eu-central-1"
+    encrypt      = true
+    use_lockfile = true
+
   }
 }
 
@@ -39,9 +49,9 @@ locals {
   name_prefix = "alex"
 
   common_tags = {
-    Project     = "alex"
-    Part        = "7_frontend"
-    ManagedBy   = "terraform"
+    Project   = "alex"
+    Part      = "7_frontend"
+    ManagedBy = "terraform"
   }
 }
 
@@ -238,10 +248,10 @@ resource "aws_apigatewayv2_api" "main" {
   tags          = local.common_tags
 
   cors_configuration {
-    allow_credentials = false  # Cannot be true when allow_origins is "*"
+    allow_credentials = false # Cannot be true when allow_origins is "*"
     allow_headers     = ["authorization", "content-type", "x-amz-date", "x-api-key", "x-amz-security-token"]
     allow_methods     = ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
-    allow_origins     = ["*"]  # CORS is handled in Lambda via environment variables
+    allow_origins     = ["*"] # CORS is handled in Lambda via environment variables
     max_age           = 300
   }
 }

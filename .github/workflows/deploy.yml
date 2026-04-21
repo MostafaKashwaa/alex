@@ -1,0 +1,322 @@
+name: Deploy Alex Platform
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'terraform/**'
+      - 'backend/**'
+      - '.github/workflows/deploy.yml'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+        - staging
+        - production
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+  ENVIRONMENT: ${{ github.event.inputs.environment || (github.ref == 'refs/heads/main' && 'production' || 'staging') }}
+  AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+  STATE_BUCKET: alex-terraform-state-${{ secrets.AWS_ACCOUNT_ID }}
+
+jobs:
+  deploy:
+    name: Deploy Alex Platform
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+    
+    - name: Setup Python with uv
+      uses: astral-sh/setup-uv@v3
+      with:
+        enable-cache: true
+        cache-dependency-glob: '**/uv.lock'
+    
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: 1.6.0
+    
+    - name: Setup Docker
+      uses: docker/setup-buildx-action@v3
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+        cache: 'npm'
+        cache-dependency-path: 'frontend/package-lock.json'
+    
+    - name: Install AWS CLI and jq
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y jq unzip
+        curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+        unzip awscliv2.zip
+        sudo ./aws/install --update
+    
+    - name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+        aws-region: ${{ env.AWS_REGION }}
+        role-session-name: GitHubActionsAlex
+    
+    # ========== GUIDE 1: State Bucket ==========
+    - name: Initialize State Bucket
+      run: |
+        cd terraform/1_state
+        terraform init
+        terraform apply -auto-approve \
+          -var="environment=${{ env.ENVIRONMENT }}" \
+          -var="aws_region=${{ env.AWS_REGION }}"
+    
+    # ========== GUIDE 2: SageMaker ==========
+    - name: Deploy SageMaker Endpoint
+      run: |
+        cd terraform/2_sagemaker
+        terraform init \
+          -backend-config="bucket=${{ env.STATE_BUCKET }}" \
+          -backend-config="key=2_sagemaker/terraform.tfstate" \
+          -backend-config="region=${{ env.AWS_REGION }}"
+        
+        terraform apply -auto-approve \
+          -var="environment=${{ env.ENVIRONMENT }}" \
+          -var="aws_region=${{ env.AWS_REGION }}"
+    
+    # ========== GUIDE 3: Ingestion Pipeline ==========
+    - name: Package Ingestion Lambda
+      run: |
+        cd backend/ingest
+        uv run package.py
+        echo "✅ Ingestion Lambda packaged"
+    
+    - name: Deploy Ingestion Pipeline
+      run: |
+        # Get SageMaker endpoint
+        cd terraform/2_sagemaker
+        SAGEMAKER_ENDPOINT=$(terraform output -raw sagemaker_endpoint_name)
+        cd ../..
+        
+        cd terraform/3_ingestion
+        terraform init \
+          -backend-config="bucket=${{ env.STATE_BUCKET }}" \
+          -backend-config="key=3_ingestion/terraform.tfstate" \
+          -backend-config="region=${{ env.AWS_REGION }}"
+        
+        terraform apply -auto-approve \
+          -var="environment=${{ env.ENVIRONMENT }}" \
+          -var="aws_region=${{ env.AWS_REGION }}" \
+          -var="sagemaker_endpoint_name=$SAGEMAKER_ENDPOINT"
+    
+    # ========== GUIDE 4: Researcher Agent ==========
+    - name: Build and Push Researcher Docker Image
+      run: |
+        cd backend/researcher
+        
+        # Login to ECR
+        aws ecr get-login-password --region ${{ env.AWS_REGION }} | \
+          docker login --username AWS --password-stdin \
+          ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
+        
+        # Build and push
+        docker build -t alex-researcher:${{ github.sha }} .
+        docker tag alex-researcher:${{ github.sha }} \
+          ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/alex-researcher:${{ github.sha }}
+        docker push \
+          ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/alex-researcher:${{ github.sha }}
+    
+    - name: Deploy Researcher Agent
+      run: |
+        # Get vector bucket
+        cd terraform/3_ingestion
+        VECTOR_BUCKET=$(terraform output -raw vector_bucket)
+        cd ../..
+        
+        cd terraform/4_researcher
+        terraform init \
+          -backend-config="bucket=${{ env.STATE_BUCKET }}" \
+          -backend-config="key=4_researcher/terraform.tfstate" \
+          -backend-config="region=${{ env.AWS_REGION }}"
+        
+        terraform apply -auto-approve \
+          -var="environment=${{ env.ENVIRONMENT }}" \
+          -var="aws_region=${{ env.AWS_REGION }}" \
+          -var="vector_bucket=$VECTOR_BUCKET" \
+          -var="docker_image_tag=${{ github.sha }}"
+    
+    # ========== GUIDE 5: Database ==========
+    - name: Deploy Aurora Database
+      run: |
+        cd terraform/5_database
+        terraform init \
+          -backend-config="bucket=${{ env.STATE_BUCKET }}" \
+          -backend-config="key=5_database/terraform.tfstate" \
+          -backend-config="region=${{ env.AWS_REGION }}"
+        
+        terraform apply -auto-approve \
+          -var="environment=${{ env.ENVIRONMENT }}" \
+          -var="aws_region=${{ env.AWS_REGION }}"
+    
+    # ========== GUIDE 6: Agent Orchestra ==========
+    - name: Package Agent Lambdas
+      run: |
+        echo "📦 Packaging agent Lambdas..."
+        
+        # Package each agent
+        for agent in planner tagger reporter charter retirement; do
+          echo "Packaging $agent agent..."
+          cd "backend/$agent"
+          uv run package_docker.py
+          if [ $? -eq 0 ]; then
+            echo "✅ $agent packaged"
+          else
+            echo "❌ Failed to package $agent"
+            exit 1
+          fi
+          cd ../..
+        done
+        
+        echo "✅ All agents packaged"
+    
+    - name: Deploy Agent Orchestra
+      run: |
+        # Get outputs from previous modules
+        cd terraform/2_sagemaker
+        SAGEMAKER_ENDPOINT=$(terraform output -raw sagemaker_endpoint_name)
+        cd ../..
+        
+        cd terraform/3_ingestion
+        VECTOR_BUCKET=$(terraform output -raw vector_bucket)
+        cd ../..
+        
+        cd terraform/5_database
+        AURORA_CLUSTER_ARN=$(terraform output -raw aurora_cluster_arn)
+        AURORA_SECRET_ARN=$(terraform output -raw aurora_secret_arn)
+        cd ../..
+        
+        cd terraform/6_agents
+        terraform init \
+          -backend-config="bucket=${{ env.STATE_BUCKET }}" \
+          -backend-config="key=6_agents/terraform.tfstate" \
+          -backend-config="region=${{ env.AWS_REGION }}"
+        
+        terraform apply -auto-approve \
+          -var="environment=${{ env.ENVIRONMENT }}" \
+          -var="aws_region=${{ env.AWS_REGION }}" \
+          -var="aurora_cluster_arn=$AURORA_CLUSTER_ARN" \
+          -var="aurora_secret_arn=$AURORA_SECRET_ARN" \
+          -var="vector_bucket=$VECTOR_BUCKET" \
+          -var="sagemaker_endpoint=$SAGEMAKER_ENDPOINT" \
+          -var="bedrock_model_id=${{ vars.BEDROCK_MODEL_ID || 'us.amazon.nova-pro-v1:0' }}" \
+          -var="bedrock_region=${{ vars.BEDROCK_REGION || 'us-west-2' }}" \
+          -var="polygon_api_key=${{ secrets.POLYGON_API_KEY }}" \
+          -var="polygon_plan=${{ vars.POLYGON_PLAN || 'free' }}" \
+          -var="openai_api_key=${{ secrets.OPENAI_API_KEY }}"
+    
+    # ========== GUIDE 7: Frontend ==========
+    - name: Build Frontend
+      run: |
+        cd frontend
+        npm ci
+        npm run build
+        echo "✅ Frontend built"
+    
+    - name: Deploy Frontend
+      run: |
+        cd terraform/7_frontend
+        terraform init \
+          -backend-config="bucket=${{ env.STATE_BUCKET }}" \
+          -backend-config="key=7_frontend/terraform.tfstate" \
+          -backend-config="region=${{ env.AWS_REGION }}"
+        
+        terraform apply -auto-approve \
+          -var="environment=${{ env.ENVIRONMENT }}" \
+          -var="aws_region=${{ env.AWS_REGION }}" \
+          -var="clerk_publishable_key=${{ secrets.CLERK_PUBLISHABLE_KEY }}" \
+          -var="clerk_secret_key=${{ secrets.CLERK_SECRET_KEY }}"
+    
+    # ========== GUIDE 8: Enterprise Features ==========
+    - name: Deploy Enterprise Features
+      run: |
+        cd terraform/8_enterprise
+        terraform init \
+          -backend-config="bucket=${{ env.STATE_BUCKET }}" \
+          -backend-config="key=8_enterprise/terraform.tfstate" \
+          -backend-config="region=${{ env.AWS_REGION }}"
+        
+        terraform apply -auto-approve \
+          -var="environment=${{ env.ENVIRONMENT }}" \
+          -var="aws_region=${{ env.AWS_REGION }}" \
+          -var="langfuse_public_key=${{ secrets.LANGFUSE_PUBLIC_KEY }}" \
+          -var="langfuse_secret_key=${{ secrets.LANGFUSE_SECRET_KEY }}" \
+          -var="langfuse_host=${{ vars.LANGFUSE_HOST || 'https://us.cloud.langfuse.com' }}"
+    
+    - name: Generate Deployment Summary
+      if: always()
+      run: |
+        echo "## 🚀 Alex Platform Deployment Complete" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Environment:** ${{ env.ENVIRONMENT }}" >> $GITHUB_STEP_SUMMARY
+        echo "**Region:** ${{ env.AWS_REGION }}" >> $GITHUB_STEP_SUMMARY
+        echo "**Commit:** \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        echo "### 📋 Deployment Outputs" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        # Collect important outputs
+        OUTPUTS=""
+        
+        # API Gateway URL
+        if [ -d "terraform/3_ingestion" ]; then
+          cd terraform/3_ingestion
+          API_URL=$(terraform output -raw api_gateway_url 2>/dev/null || echo "")
+          if [ -n "$API_URL" ]; then
+            OUTPUTS="${OUTPUTS}- **API Endpoint:** \`$API_URL\`\n"
+          fi
+          cd ../..
+        fi
+        
+        # Frontend URL
+        if [ -d "terraform/7_frontend" ]; then
+          cd terraform/7_frontend
+          FRONTEND_URL=$(terraform output -raw cloudfront_url 2>/dev/null || echo "")
+          if [ -n "$FRONTEND_URL" ]; then
+            OUTPUTS="${OUTPUTS}- **Frontend URL:** \`$FRONTEND_URL\`\n"
+          fi
+          cd ../..
+        fi
+        
+        # Database info
+        if [ -d "terraform/5_database" ]; then
+          cd terraform/5_database
+          DB_CLUSTER=$(terraform output -raw aurora_cluster_arn 2>/dev/null || echo "")
+          if [ -n "$DB_CLUSTER" ]; then
+            OUTPUTS="${OUTPUTS}- **Database Cluster:** \`$DB_CLUSTER\`\n"
+          fi
+          cd ../..
+        fi
+        
+        if [ -n "$OUTPUTS" ]; then
+          echo -e "$OUTPUTS" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "No outputs available" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### 🔧 Next Steps" >> $GITHUB_STEP_SUMMARY
+        echo "1. Test the deployed endpoints" >> $GITHUB_STEP_SUMMARY
+        echo "2. Check CloudWatch logs for any errors" >> $GITHUB_STEP_SUMMARY
+        echo "3. Monitor AWS costs in Cost Explorer" >> $GITHUB_STEP_SUMMARY
+        echo "4. Run agent tests with \`test_full.py\`" >> $GITHUB_STEP_SUMMARY

@@ -221,6 +221,8 @@ __marimo__/
 terraform.tfstate.d/
 *.tfstate
 *.tfstate.backup
+*.tfvars
+*.terraform.lock.hcl
 
 # Lambda deployment packages
 lambda_function.zip
@@ -231,3 +233,6 @@ backend/**/*_lambda.zip
 # But do include the scheduler
 !backend/scheduler/lambda_function.zip
 !frontend/lib
+
+guides/
+.tmux_agent_history

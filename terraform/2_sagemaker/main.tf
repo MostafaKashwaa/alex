@@ -7,6 +7,14 @@ terraform {
       version = "~> 5.70"
     }
   }
+
+  backend "s3" {
+    bucket = "alex-terraform-state-820374639726"
+    key    = "sagemaker/terraform.tfstate"
+    region = "eu-central-1"
+    encrypt = true  # Optional: encrypt state file at rest
+    use_lockfile = true  # Optional: enable state locking to prevent concurrent modifications
+  }
   
   # Using local backend - state will be stored in terraform.tfstate in this directory
   # This is automatically gitignored for security

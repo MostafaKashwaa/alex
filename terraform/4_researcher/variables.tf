@@ -25,3 +25,8 @@ variable "scheduler_enabled" {
   type        = bool
   default     = false
 }
+
+variable "tfstate_bucket" {
+  description = "S3 bucket for Terraform state"
+  type        = string
+}

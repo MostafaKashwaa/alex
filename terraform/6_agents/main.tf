@@ -7,6 +7,14 @@ terraform {
       version = "~> 5.0"
     }
   }
+
+  backend "s3" {
+    bucket       = "alex-terraform-state-820374639726"
+    key            = "agents/terraform.tfstate"
+    region       = "eu-central-1"
+    encrypt        = true
+    use_lockfile = true
+  }
   
   # Using local backend - state will be stored in terraform.tfstate in this directory
   # This is automatically gitignored for security
