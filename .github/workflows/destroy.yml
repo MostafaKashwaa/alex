@@ -92,7 +92,7 @@ jobs:
         echo "Proceeding with destruction in 10 seconds..."
         sleep 10
     
-        # # ========== GUIDE 8: Enterprise Features ==========
+        # # ========== 8: Enterprise Features ==========
         # - name: Destroy Enterprise Features
         #   run: |
         #     echo "🗑️  Destroying Enterprise Features..."
@@ -109,61 +109,72 @@ jobs:
         #       -var="langfuse_secret_key=${{ secrets.LANGFUSE_SECRET_KEY }}" \
         #       -var="langfuse_host=${{ vars.LANGFUSE_HOST || 'https://us.cloud.langfuse.com' }}"
         # 
-        # # ========== GUIDE 7: Frontend ==========
-        # - name: Destroy Frontend
-        #   run: |
-        #     echo "🗑️  Destroying Frontend..."
-        #     cd terraform/7_frontend
-        #     terraform init \
-        #       -backend-config="bucket=${{ env.STATE_BUCKET }}" \
-        #       -backend-config="key=7_frontend/terraform.tfstate" \
-        #       -backend-config="region=${{ env.AWS_REGION }}"
-        #     
-        #     terraform destroy -auto-approve \
-        #       -var="environment=${{ env.ENVIRONMENT }}" \
-        #       -var="aws_region=${{ env.AWS_REGION }}" \
-        #       -var="clerk_publishable_key=${{ secrets.CLERK_PUBLISHABLE_KEY }}" \
-        #       -var="clerk_secret_key=${{ secrets.CLERK_SECRET_KEY }}"
-        # 
-        # # ========== GUIDE 6: Agent Orchestra ==========
-        # - name: Destroy Agent Orchestra
-        #   run: |
-        #     echo "🗑️  Destroying Agent Orchestra..."
-        #     
-        #     # Get outputs from previous modules
-        #     cd terraform/2_sagemaker
-        #     SAGEMAKER_ENDPOINT=$(terraform output -raw sagemaker_endpoint_name 2>/dev/null || echo "")
-        #     cd ../..
-        #     
-        #     cd terraform/3_ingestion
-        #     VECTOR_BUCKET=$(terraform output -raw vector_bucket 2>/dev/null || echo "")
-        #     cd ../..
-        #     
-        #     cd terraform/5_database
-        #     AURORA_CLUSTER_ARN=$(terraform output -raw aurora_cluster_arn 2>/dev/null || echo "")
-        #     AURORA_SECRET_ARN=$(terraform output -raw aurora_secret_arn 2>/dev/null || echo "")
-        #     cd ../..
-        #     
-        #     cd terraform/6_agents
-        #     terraform init \
-        #       -backend-config="bucket=${{ env.STATE_BUCKET }}" \
-        #       -backend-config="key=6_agents/terraform.tfstate" \
-        #       -backend-config="region=${{ env.AWS_REGION }}"
-        #     
-        #     terraform destroy -auto-approve \
-        #       -var="environment=${{ env.ENVIRONMENT }}" \
-        #       -var="aws_region=${{ env.AWS_REGION }}" \
-        #       -var="aurora_cluster_arn=$AURORA_CLUSTER_ARN" \
-        #       -var="aurora_secret_arn=$AURORA_SECRET_ARN" \
-        #       -var="vector_bucket=$VECTOR_BUCKET" \
-        #       -var="sagemaker_endpoint=$SAGEMAKER_ENDPOINT" \
-        #       -var="bedrock_model_id=${{ vars.BEDROCK_MODEL_ID || 'us.amazon.nova-pro-v1:0' }}" \
-        #       -var="bedrock_region=${{ vars.BEDROCK_REGION || 'us-west-2' }}" \
-        #       -var="polygon_api_key=${{ secrets.POLYGON_API_KEY }}" \
-        #       -var="polygon_plan=${{ vars.POLYGON_PLAN || 'free' }}" \
-        #       -var="openai_api_key=${{ secrets.OPENAI_API_KEY }}"
-        # 
-    # ========== GUIDE 5: Database ==========
+    # ========== 7: Frontend ==========
+    - name: Destroy Frontend
+      run: |
+        echo "Building and packaging API for destruction..."
+        cd backend/api
+        uv run package_docker.py
+          if [ $? -eq 0 ]; then
+            echo "✅ API packaged"
+          else
+            echo "❌ Failed to package API"
+            exit 1
+          fi
+        cd ../..
+
+
+        echo "🗑️  Destroying Frontend..."
+        cd terraform/7_frontend
+        terraform init \
+          -backend-config="bucket=${{ env.STATE_BUCKET }}" \
+          -backend-config="key=7_frontend/terraform.tfstate" \
+          -backend-config="region=${{ env.AWS_REGION }}"
+        
+        terraform destroy -lock=false -auto-approve \
+          -var="environment=${{ env.ENVIRONMENT }}" \
+          -var="aws_region=${{ env.AWS_REGION }}" \
+          -var="clerk_jwks_url=${{ secrets.CLERK_JWKS_URL }}" \
+    
+    # ========== 6: Agent Orchestra ==========
+    - name: Destroy Agent Orchestra
+      run: |
+        echo "🗑️  Destroying Agent Orchestra..."
+        
+        # Get outputs from previous modules
+        cd terraform/2_sagemaker
+        SAGEMAKER_ENDPOINT=$(terraform output -raw sagemaker_endpoint_name 2>/dev/null || echo "")
+        cd ../..
+        
+        cd terraform/3_ingestion
+        VECTOR_BUCKET=$(terraform output -raw vector_bucket 2>/dev/null || echo "")
+        cd ../..
+        
+        cd terraform/5_database
+        AURORA_CLUSTER_ARN=$(terraform output -raw aurora_cluster_arn 2>/dev/null || echo "")
+        AURORA_SECRET_ARN=$(terraform output -raw aurora_secret_arn 2>/dev/null || echo "")
+        cd ../..
+        
+        cd terraform/6_agents
+        terraform init \
+          -backend-config="bucket=${{ env.STATE_BUCKET }}" \
+          -backend-config="key=6_agents/terraform.tfstate" \
+          -backend-config="region=${{ env.AWS_REGION }}"
+        
+        terraform destroy -auto-approve \
+          -var="environment=${{ env.ENVIRONMENT }}" \
+          -var="aws_region=${{ env.AWS_REGION }}" \
+          -var="aurora_cluster_arn=$AURORA_CLUSTER_ARN" \
+          -var="aurora_secret_arn=$AURORA_SECRET_ARN" \
+          -var="vector_bucket=$VECTOR_BUCKET" \
+          -var="sagemaker_endpoint=$SAGEMAKER_ENDPOINT" \
+          -var="bedrock_model_id=${{ vars.BEDROCK_MODEL_ID || 'us.amazon.nova-pro-v1:0' }}" \
+          -var="bedrock_region=${{ vars.BEDROCK_REGION || 'us-west-2' }}" \
+          -var="polygon_api_key=${{ secrets.POLYGON_API_KEY }}" \
+          -var="polygon_plan=${{ vars.POLYGON_PLAN || 'free' }}" \
+          -var="openai_api_key=${{ secrets.OPENAI_API_KEY }}"
+     
+    # ========== 5: Database ==========
     - name: Destroy Aurora Database
       run: |
         echo "🗑️  Destroying Aurora Database..."
@@ -177,7 +188,7 @@ jobs:
           -var="environment=${{ env.ENVIRONMENT }}" \
           -var="aws_region=${{ env.AWS_REGION }}"
     
-    # ========== GUIDE 4: Researcher Agent ==========
+    #========== 4: Researcher Agent ==========
     # - name: Destroy Researcher Agent
     #   run: |
     #     echo "🗑️  Destroying Researcher Agent..."
@@ -185,16 +196,17 @@ jobs:
     #     # Get vector bucket
     #     # -var="vector_bucket=$VECTOR_BUCKET" \
     #     # -var="docker_image_tag=${{ github.sha }}"
-    #     cd terraform/3_ingestion
-    #     VECTOR_BUCKET=$(terraform output -raw vector_bucket 2>/dev/null || echo "")
-    #     ALEX_API_KEY_ID=$(terraform output -raw api_key_id)
+    #     # cd terraform/3_ingestion
+    #     # VECTOR_BUCKET=$(terraform output -raw vector_bucket 2>/dev/null || echo "")
+    #     # ALEX_API_KEY_ID=$(terraform output -raw api_key_id)
 
-    #     ALEX_API_ENDPOINT=$(terraform output -raw api_endpoint)
+    #     # ALEX_API_ENDPOINT=$(terraform output -raw api_endpoint)
+    #     ALEX_API_KEY_ID=$(aws apigateway get-api-keys --include-values --query "items[?name=='alex-api-key'].id" --output text)
 
     #     ALEX_API_KEY=$(aws apigateway get-api-key --api-key $ALEX_API_KEY_ID --include-value --query 'value' --output text)
 
 
-    #     cd ../..
+    #     # cd ../..
     #     
     #     cd terraform/4_researcher
     #     terraform init \
@@ -210,7 +222,7 @@ jobs:
     #       -var="openai_api_key=${{ secrets.OPENAI_API_KEY }}" 
 
     
-    # ========== GUIDE 3: Ingestion Pipeline ==========
+    # ========== 3: Ingestion Pipeline ==========
     - name: Destroy Ingestion Pipeline
       run: |
         echo "🗑️  Destroying Ingestion Pipeline..."
@@ -226,12 +238,12 @@ jobs:
           -backend-config="key=3_ingestion/terraform.tfstate" \
           -backend-config="region=${{ env.AWS_REGION }}"
         
-        terraform destroy -auto-approve \
+        terraform destroy -lock=false -auto-approve \
           -var="environment=${{ env.ENVIRONMENT }}" \
           -var="aws_region=${{ env.AWS_REGION }}" \
           -var="sagemaker_endpoint_name=$SAGEMAKER_ENDPOINT"
     
-    # ========== GUIDE 2: SageMaker ==========
+    # ========== 2: SageMaker ==========
     - name: Destroy SageMaker Endpoint
       run: |
         echo "🗑️  Destroying SageMaker Endpoint..."

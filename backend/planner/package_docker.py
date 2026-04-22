@@ -65,6 +65,7 @@ def package_lambda():
             "-v", f"{temp_path}:/build",
             "-v", f"{backend_dir}/database:/database",
             "--entrypoint", "/bin/bash",
+            "--user", f"{os.getuid()}:{os.getgid()}",
             "public.ecr.aws/lambda/python:3.12",
             "-c",
             """cd /build && pip install --target ./package -r requirements.txt && pip install --target ./package --no-deps /database"""

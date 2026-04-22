@@ -30,20 +30,41 @@ data "aws_caller_identity" "current" {}
 data "aws_region" "current" {}
 
 # Reference Part 5 Database resources
+# data "terraform_remote_state" "database" {
+#   backend = "local"
+#   config = {
+#     path = "../5_database/terraform.tfstate"
+#   }
+# }
+
+# Reference Part 6 Agents resources
+# data "terraform_remote_state" "agents" {
+#   backend = "local"
+#   config = {
+#     path = "../6_agents/terraform.tfstate"
+#   }
+# }
+
+# Reference Part 5 Database resources
 data "terraform_remote_state" "database" {
-  backend = "local"
+  backend = "s3"
   config = {
-    path = "../5_database/terraform.tfstate"
+    bucket = "alex-terraform-state-820374639726"
+    key    = "5_database/terraform.tfstate"
+    region = var.aws_region
   }
 }
 
 # Reference Part 6 Agents resources
 data "terraform_remote_state" "agents" {
-  backend = "local"
+  backend = "s3"
   config = {
-    path = "../6_agents/terraform.tfstate"
+    bucket = "alex-terraform-state-820374639726"
+    key    = "6_agents/terraform.tfstate"
+    region = var.aws_region
   }
 }
+
 
 locals {
   name_prefix = "alex"

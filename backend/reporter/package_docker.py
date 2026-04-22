@@ -57,17 +57,12 @@ def package_lambda():
 
         # Use Docker to install dependencies for Lambda's architecture
         docker_cmd = [
-            "docker",
-            "run",
-            "--rm",
-            "--platform",
-            "linux/amd64",
-            "-v",
-            f"{temp_path}:/build",
-            "-v",
-            f"{backend_dir}/database:/database",
-            "--entrypoint",
-            "/bin/bash",
+            "docker", "run", "--rm", 
+            "--platform", "linux/amd64",
+            "-v", f"{temp_path}:/build",
+            "-v", f"{backend_dir}/database:/database",
+            "--entrypoint", "/bin/bash",
+            "--user", f"{os.getuid()}:{os.getgid()}",
             "public.ecr.aws/lambda/python:3.12",
             "-c",
             """cd /build && pip install --target ./package -r requirements.txt && pip install --target ./package --no-deps /database""",

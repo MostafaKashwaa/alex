@@ -1,12 +1,12 @@
 name: Deploy Alex Platform
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'terraform/**'
-      - 'backend/**'
-      - '.github/workflows/deploy.yml'
+  # push:
+  #   branches: [main]
+  #   paths:
+  #     - 'terraform/**'
+  #     - 'backend/**'
+  #     - '.github/workflows/deploy.yml'
   workflow_dispatch:
     inputs:
       environment:
@@ -72,7 +72,7 @@ jobs:
         aws-region: ${{ env.AWS_REGION }}
         role-session-name: GitHubActionsAlex
     
-    # ========== GUIDE 2: SageMaker ==========
+    # ========== 2: SageMaker ==========
     - name: Deploy SageMaker Endpoint
       run: |
         cd terraform/2_sagemaker
@@ -85,7 +85,7 @@ jobs:
           -var="environment=${{ env.ENVIRONMENT }}" \
           -var="aws_region=${{ env.AWS_REGION }}"
     
-    # ========== GUIDE 3: Ingestion Pipeline ==========
+    # ========== 3: Ingestion Pipeline ==========
     - name: Package Ingestion Lambda
       run: |
         cd backend/ingest
@@ -105,12 +105,12 @@ jobs:
           -backend-config="key=3_ingestion/terraform.tfstate" \
           -backend-config="region=${{ env.AWS_REGION }}"
         
-        terraform apply -auto-approve \
+        terraform apply -lock=false -auto-approve \
           -var="environment=${{ env.ENVIRONMENT }}" \
           -var="aws_region=${{ env.AWS_REGION }}" \
           -var="sagemaker_endpoint_name=$SAGEMAKER_ENDPOINT"
     
-    # ========== GUIDE 4: Researcher Agent ==========
+    # ========== 4: Researcher Agent ==========
     - name: Deploy Researcher Agent Infrastructure
       run: |
         # Get vector bucket
@@ -169,26 +169,11 @@ jobs:
 
         cd ../..
         
-        # Login to ECR
-        # aws ecr get-login-password --region ${{ env.AWS_REGION }} | \
-        #   docker login --username AWS --password-stdin \
-        #   ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
-        # 
-        # # Build and push
-        # docker build -t alex-researcher:${{ github.sha }} .
-        # docker tag alex-researcher:${{ github.sha }} \
-        #   ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/alex-researcher:${{ github.sha }}
-        # docker push \
-        #   ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/alex-researcher:${{ github.sha }}
-
     - name: Create the App Runner Service for Researcher Agent
       run: |
-        # Get vector bucket
-
+        # Get SageMaker outputs
         cd terraform/3_ingestion
-
         VECTOR_BUCKET=$(terraform output -raw vector_bucket_name)
-
         ALEX_API_ENDPOINT=$(terraform output -raw api_endpoint)
 
         ALEX_API_KEY_ID=$(terraform output -raw api_key_id)
@@ -208,7 +193,7 @@ jobs:
           -var="openai_api_key=${{ secrets.OPENAI_API_KEY }}" 
     
           
-    # ========== GUIDE 5: Database ==========
+    # ========== 5: Database ==========
     - name: Deploy Aurora Database
       run: |
         cd terraform/5_database
@@ -221,9 +206,15 @@ jobs:
           -var="environment=${{ env.ENVIRONMENT }}" \
           -var="aws_region=${{ env.AWS_REGION }}"
     
-    # ========== GUIDE 6: Agent Orchestra ==========
+    # ========== 6: Agent Orchestration ==========
     - name: Package Agent Lambdas
       run: |
+        cd terraform/5_database
+        AURORA_CLUSTER_ARN=$(terraform output -raw aurora_cluster_arn)
+        AURORA_SECRET_ARN=$(terraform output -raw aurora_secret_arn)
+        
+        cd ../..
+
         echo "📦 Packaging agent Lambdas..."
         
         # Package each agent
@@ -242,7 +233,7 @@ jobs:
         
         echo "✅ All agents packaged"
     
-    - name: Deploy Agent Orchestra
+    - name: Deploy Agent Orchestration
       run: |
         # Get outputs from previous modules
         cd terraform/2_sagemaker
@@ -250,7 +241,7 @@ jobs:
         cd ../..
         
         cd terraform/3_ingestion
-        VECTOR_BUCKET=$(terraform output -raw vector_bucket)
+        VECTOR_BUCKET=$(terraform output -raw vector_bucket_name)
         cd ../..
         
         cd terraform/5_database
@@ -277,17 +268,46 @@ jobs:
           -var="polygon_plan=${{ vars.POLYGON_PLAN || 'free' }}" \
           -var="openai_api_key=${{ secrets.OPENAI_API_KEY }}"
     
-    # ========== GUIDE 7: Frontend ==========
+    # ========== 7: Frontend ==========
     - name: Build Frontend
+      env:
+        NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${{ secrets.CLERK_PUBLISHABLE_KEY }}/
+        CLERK_SECRET_KEY: ${{ secrets.CLERK_SECRET_KEY }}
+        
       run: |
-        cd frontend
-        npm ci
-        npm run build
-        echo "✅ Frontend built"
+        cd backend/api
+        uv run package_docker.py
+          if [ $? -eq 0 ]; then
+            echo "✅ API packaged"
+          else
+            echo "❌ Failed to package API"
+            exit 1
+          fi
+        cd ../..
+
+        # cd frontend
+        # npm ci
+        # npm run build
+        # echo "✅ Frontend built"
     
+       # -var="clerk_jwks_url=https://${{ secrets.CLERK_INSTANCE }}.clerk.accounts.dev/.well-known/jwks.json" \
+       
     - name: Deploy Frontend
+      env:
+        NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${{ secrets.CLERK_PUBLISHABLE_KEY }}/
+        CLERK_SECRET_KEY: ${{ secrets.CLERK_SECRET_KEY }}
+ 
       run: |
+        NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=pk_test_Y2VydGFpbi13YXNwLTExLmNsZXJrLmFjY291bnRzLmRldiQ
+        cd terraform/6_agents
+        SQS_QUEUE_URL=$(terraform output -raw sqs_queue_url)
+        cd ../..
+
         cd terraform/7_frontend
+
+        # NEXT_PUBLIC_CLERK_AFTER_SIGN_IN_URL=/dashboard
+        # NEXT_PUBLIC_CLERK_AFTER_SIGN_UP_URL=/dashboard
+
         terraform init \
           -backend-config="bucket=${{ env.STATE_BUCKET }}" \
           -backend-config="key=7_frontend/terraform.tfstate" \
@@ -296,10 +316,24 @@ jobs:
         terraform apply -auto-approve \
           -var="environment=${{ env.ENVIRONMENT }}" \
           -var="aws_region=${{ env.AWS_REGION }}" \
-          -var="clerk_publishable_key=${{ secrets.CLERK_PUBLISHABLE_KEY }}" \
-          -var="clerk_secret_key=${{ secrets.CLERK_SECRET_KEY }}"
+          -var="clerk_jwks_url=${{ secrets.CLERK_JWKS_URL }}" \
+
+
+        echo "✅ Frontend Infrastructure built"
+        
+        cd ../..
+        cd frontend
+        # npm ci
+        npm install
+        npm run build
+        echo "✅ Frontend built"
+
+        cd ../..
+        cd scripts
+        uv run deploy.py
+        echo "✅ Frontend deployed"
     
-    # ========== GUIDE 8: Enterprise Features ==========
+    # ========== 8: Enterprise Features ==========
     - name: Deploy Enterprise Features
       run: |
         cd terraform/8_enterprise
